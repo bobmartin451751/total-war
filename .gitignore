@@ -1,0 +1,7 @@
+# local scratch space: QA scripts, screenshots
+.temp/
+
+# OS cruft
+Thumbs.db
+desktop.ini
+.DS_Store
