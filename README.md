@@ -42,23 +42,31 @@ behind it.
 - **Supply** — landings without a port in range lose a unit per turn
 - **Terrain** — defence multipliers from 1.0 (plains) to 1.8 (mountains)
 - **Diplomacy** — non-aggression pacts cost 120 gold and can be broken at any
-  time, at the price of immediate war
+  time, at the price of immediate war. Every arm respects a pact: armies,
+  ships, bombers and airborne landings all refuse to strike a signatory
 - **Research** — four branches at your capital: arms, economy, naval, air
-- **Fog of war** — you see two tiles from your territory, three from aircraft
+- **Fog of war** — you see two tiles from your territory, three from aircraft.
+  Unscouted tiles report their owner and garrison only as "Unknown"
 
 ## Controls
 
 | Input | Action |
 |---|---|
 | Left click | Select a tile, or move/attack to a highlighted tile |
+| Left click again | Cycle between units stacked on the same tile |
 | Right click | Cancel selection |
 | Mouse wheel | Zoom |
 | Space | End turn |
 | `Shift+G` | Toggle god mode (unlimited gold) |
+| New War | Abandon the campaign and generate a fresh world |
 
 Select your capital for recruiting, shipyards, airbases and research.
 Select a loaded transport for its landing options.
 Select a bomber or fighter, then click an enemy stack in range to strike it.
+
+When several of your units share a tile, the sidebar lists them under **Units
+on this tile**; click one to give it orders, or click the tile repeatedly to
+cycle.
 
 ## Victory
 
@@ -75,7 +83,7 @@ accruing income and is restored exactly when you switch it off.
 ## Technical notes
 
 - One file, no dependencies, no build step
-- Vanilla JS and canvas, ~2,100 lines
+- Vanilla JS and canvas, ~2,200 lines
 - Saves to `localStorage` each turn
 - `index.html#selftest200` runs a headless 200-turn stress test and reports
   invariant violations, AI timing and stalls
