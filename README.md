@@ -25,8 +25,8 @@ You are **Ashkar**. Eleven AI factions want what you have.
 | Transport | Naval. Carries 8. The only way to land armour at scale. |
 | Destroyer | Naval escort and transport hunter. |
 | Air Lift | Carries 4 infantry, ignores terrain, interceptable. |
-| Fighter | Air superiority. Kills transports and bombers. |
-| Bomber | Kills ships and armies. Helpless against fighters. |
+| Fighter | Air superiority. Strikes from range and intercepts enemy aircraft within 3 tiles. |
+| Bomber | Damages ships and armies every strike. Vulnerable to fighter cover. |
 
 No single branch wins. Air takes the port with infantry, sea lands the armour
 behind it.
@@ -35,9 +35,14 @@ behind it.
 
 - **Amphibious assault** — attack from a loaded transport at −25%
 - **Airborne assault** — drop infantry at −40%; armour is too heavy to fly
+- **Air strikes** — bombers and fighters hit any enemy stack within range and
+  stay where they are; each strike reports the units it destroyed
+- **Interception** — a fighter within 3 tiles of a strike or airdrop has a 45%
+  chance to engage; a successful pass shoots the attacker down
 - **Supply** — landings without a port in range lose a unit per turn
 - **Terrain** — defence multipliers from 1.0 (plains) to 1.8 (mountains)
-- **Diplomacy** — non-aggression pacts, 120 gold, AI remembers betrayal
+- **Diplomacy** — non-aggression pacts cost 120 gold and can be broken at any
+  time, at the price of immediate war
 - **Research** — four branches at your capital: arms, economy, naval, air
 - **Fog of war** — you see two tiles from your territory, three from aircraft
 
@@ -53,12 +58,13 @@ behind it.
 
 Select your capital for recruiting, shipyards, airbases and research.
 Select a loaded transport for its landing options.
+Select a bomber or fighter, then click an enemy stack in range to strike it.
 
 ## Victory
 
 - **Conquest** — hold 60% of all land
 - **Elimination** — every rival banner is gone
-- **Defeat** — you are
+- **Defeat** — you lose your last territory
 
 ## God mode
 

@@ -263,6 +263,8 @@ const G = {
   moves: [],           // highlighted tiles
   pending: null,       // pending action descriptor
   over: false,
+  overTitle: null,
+  overText: null,
   logLines: [],
   aiTimes: []
 };
@@ -370,9 +372,6 @@ function assignFactions(rng){
     isPlayer: i===0
   }));
 
-  const byGroup = {trio:[], pair:[], far:[]};
-  CONT_DEFS.forEach(c=>byGroup[c.group].push(c.id));
-
   const homes = [];
   // trio: 7 factions spread as 3/2/2 so no single banner inherits a whole island
   homes.push(...pickSpread(landOf(["C1"]), 3, rng));
@@ -387,22 +386,18 @@ function assignFactions(rng){
   // assign each faction a home tile
   homes.forEach((h,i)=>{ G.factions[i]._home = h; });
 
-  // assign every land tile to nearest home within same group
-  for(const t of G.tiles.values()){
-    if(!t.land) continue;
-    let best=null, bd=1e9;
-    for(const f of G.factions){
-      if(!f._home) continue;
-      if(GROUP_OF(t.continent) !== GROUP_OF(f._home.continent)) continue;
-      const d = hexDist(t, f._home);
-      if(d<bd){ bd=d; best=f; }
-    }
-    if(best) t.owner = best.id;
+  // Balanced, contiguous territory: each continent's banners take turns
+  // claiming one adjoining tile. Round-robin growth keeps starting sizes
+  // within one tile of each other instead of a lopsided Voronoi split.
+  for(const def of CONT_DEFS){
+    const fs = G.factions.filter(f=>f._home && f._home.continent === def.id);
+    if(fs.length) balancedAssign(def.id, fs);
   }
 
   // capitals + cities
   for(const f of G.factions){
     const h = f._home;
+    if(!h) continue;
     h.city = true; h.capital = true; h.airbase = true;
     h.owner = f.id;
     f.capital = h;
@@ -418,6 +413,53 @@ function assignFactions(rng){
   // airbases on a few coastal tiles
   for(const t of G.tiles.values()){
     if(t.land && t.owner!=null && t.port && !t.airbase && rng()<0.18) t.airbase = true;
+  }
+}
+
+function balancedAssign(contId, fs){
+  const tiles = [...G.tiles.values()].filter(t=>t.land && t.continent === contId);
+  if(!tiles.length) return;
+  const free = new Set(tiles.map(t=>key(t.q,t.r)));
+  const own = new Map();
+  for(const f of fs) own.set(f.id, new Set());
+
+  for(const f of fs){
+    if(!f._home) continue;
+    const k = key(f._home.q, f._home.r);
+    if(!free.has(k)) continue;
+    free.delete(k);
+    f._home.owner = f.id;
+    own.get(f.id).add(k);
+  }
+
+  let guard = 0;
+  while(free.size && guard++ < 5000){
+    for(const f of fs){
+      if(!free.size) break;
+      const mine = own.get(f.id);
+      let cand = null, cd = 1e9;
+      for(const k of mine){
+        const c = parseKey(k);
+        for(const [nq,nr] of neighbors(c.q,c.r)){
+          const nk = key(nq,nr);
+          if(!free.has(nk)) continue;
+          const d = hexDist({q:nq,r:nr}, f._home);
+          if(d < cd){ cd = d; cand = nk; }
+        }
+      }
+      if(!cand){
+        // penned in: jump to the nearest unclaimed tile on this continent
+        for(const k of free){
+          const d = hexDist(parseKey(k), f._home);
+          if(d < cd){ cd = d; cand = k; }
+        }
+      }
+      if(!cand) continue;
+      const t = G.tiles.get(cand);
+      t.owner = f.id;
+      free.delete(cand);
+      mine.add(cand);
+    }
   }
 }
 
@@ -475,6 +517,7 @@ function isAir(u){ return UNITS[u.type].domain === "air"; }
 function isSea(u){ return UNITS[u.type].domain === "sea"; }
 
 function spawnArmy(tile, ownerId, inf, arm){
+  visCache = null;
   const ex = G.units.find(u=>u.type==="army" && u.q===tile.q && u.r===tile.r && u.owner===ownerId);
   if(ex){ ex.inf+=inf; ex.arm+=arm; return ex; }
   const u = {id:G.nextUnitId++, type:"army", owner:ownerId, q:tile.q, r:tile.r, inf, arm, moved:false};
@@ -483,6 +526,7 @@ function spawnArmy(tile, ownerId, inf, arm){
 }
 
 function spawnUnit(type, tile, ownerId){
+  visCache = null;
   const u = {
     id:G.nextUnitId++, type, owner:ownerId,
     q:tile.q, r:tile.r, moved:false,
@@ -493,6 +537,7 @@ function spawnUnit(type, tile, ownerId){
 }
 
 function removeUnit(u){
+  visCache = null;
   const i = G.units.indexOf(u);
   if(i>=0) G.units.splice(i,1);
 }
@@ -594,8 +639,12 @@ function resolveBattle(att, def, opts){
   const attCount = att.type==="army" ? unitCount(att) : 1;
   const defCount = def.type==="army" ? unitCount(def) : 1;
 
-  const aLoss = Math.round(attCount * (d/total) * 0.55);
-  const dLoss = Math.round(defCount * (a/total) * 0.55);
+  let aLoss = Math.round(attCount * (d/total) * 0.55);
+  let dLoss = Math.round(defCount * (a/total) * 0.55);
+  // a clear advantage should always tell on the defender — without this a lone
+  // infantryman shrugs off a bomber because the rounding lands on zero
+  if(dLoss < 1 && a > d && defCount > 0) dLoss = 1;
+  if(aLoss < 1 && d > a && attCount > 0) aLoss = 1;
 
   const aLeft = att.type==="army" ? applyLosses(att, aLoss) : (a >= d ? 1 : 0);
   const dLeft = def.type==="army" ? applyLosses(def, dLoss) : (d >= a ? 1 : 0);
@@ -640,7 +689,7 @@ function landAssault(att, tile, opts){
     // move attacker in
     const from = tileAt(att.q, att.r);
     att.q = tile.q; att.r = tile.r;
-    captureSpoils(ownerId, tile);
+    captureSpoils(prev, tile);
     return {won:true};
   } else {
     if(!defender && r.dLeft <= 0){
@@ -652,11 +701,23 @@ function landAssault(att, tile, opts){
   }
 }
 
-function captureSpoils(ownerId, tile){
-  if(tile.capital){
-    const f = G.factions[tile.owner];
-    // capital simply changes hands
+function captureSpoils(prevOwner, tile){
+  if(!tile.capital) return;
+  tile.capital = false;
+  if(prevOwner == null) return;
+  const f = G.factions[prevOwner];
+  if(!f) return;
+  logSide(prevOwner, "has lost its capital", "war");
+  const owned = [...G.tiles.values()].filter(t=>t.owner===prevOwner);
+  const alt = owned.find(t=>t.city) || owned.find(t=>t.land);
+  if(alt){
+    alt.capital = true;
+    f.capital = alt;
+    logSide(prevOwner, "moved its seat to " + tileName(alt), "war");
+  } else {
+    f.capital = null;
   }
+  visCache = null;
 }
 
 function tileName(t){
@@ -707,6 +768,7 @@ function saveGame(){
   try{
     const data = {
       seed: G.seed, turn: G.turn, nextUnitId: G.nextUnitId, god: G.god,
+      over: !!G.over, overTitle: G.overTitle || null, overText: G.overText || null,
       tiles: [...G.tiles.values()],
       factions: G.factions.map(f=>({
         id:f.id, name:f.name, color:f.color, trait:f.trait,
@@ -727,6 +789,9 @@ function loadGame(){
     const d = JSON.parse(raw);
     G.seed = d.seed; G.turn = d.turn; G.nextUnitId = d.nextUnitId;
     G.god = !!d.god;
+    G.over = !!d.over;
+    G.overTitle = d.overTitle || null;
+    G.overText = d.overText || null;
     G.tiles = new Map(d.tiles.map(t=>[key(t.q,t.r), t]));
     G.factions = d.factions.map(f=>({
       ...f,
@@ -745,6 +810,7 @@ function loadGame(){
 
 const AI = {
   compCache: new Map(),
+  field: new Map(),
   maxActions: 60
 };
 
@@ -801,17 +867,52 @@ function aiFindTarget(f, from){
   return enemies.reduce((a,b)=> hexDist(from,b) < hexDist(from,a) ? b : a, enemies[0]);
 }
 
+/* True geodesic distance field from the target. Greedy stepping alone stalls
+   in bays and behind mountain chains, so paths are computed once per target
+   per turn and cached; the cached field also lets the AI route around water. */
+function fieldToward(target, domain, ownerId){
+  const ck = key(target.q,target.r) + "|" + domain + "|" + ownerId;
+  if(AI.field.has(ck)) return AI.field.get(ck);
+  const dist = new Map();
+  const start = tileAt(target.q, target.r);
+  if(!start) return dist;
+  dist.set(key(start.q,start.r), 0);
+  const queue = [start];
+  let head = 0;
+  while(head < queue.length){
+    const cur = queue[head++];
+    const d = dist.get(key(cur.q,cur.r));
+    for(const [nq,nr] of neighbors(cur.q,cur.r)){
+      const nt = tileAt(nq,nr);
+      if(!nt) continue;
+      if(domain === "land" && !nt.land) continue;
+      if(domain === "sea" && nt.land) continue;
+      const nk = key(nq,nr);
+      if(dist.has(nk)) continue;
+      dist.set(nk, d+1);
+      queue.push(nt);
+    }
+  }
+  AI.field.set(ck, dist);
+  return dist;
+}
+
 function stepToward(u, target, domain){
   if(!target) return false;
-  const here = hexDist(u, target);
-  let best = null, bestD = here;
+  const field = fieldToward(target, domain, u.owner);
+  const hereD = field.get(key(u.q,u.r));
+  if(hereD == null) return false;
+
+  let best = null, bestD = hereD;
   for(const [nq,nr] of neighbors(u.q,u.r)){
     const nt = tileAt(nq,nr);
     if(!nt) continue;
     if(domain === "land" && !nt.land) continue;
     if(domain === "sea" && nt.land) continue;
-    const d = hexDist(nt, target);
-    if(d >= bestD) continue;
+    // never walk onto foreign land: those tiles must be taken by assault
+    if(domain === "land" && nt.owner != null && nt.owner !== u.owner) continue;
+    const d = field.get(key(nq,nr));
+    if(d == null || d >= bestD) continue;
     // avoid walking into a much stronger stack
     const foes = G.units.filter(x=>x.q===nq && x.r===nr && x.owner!==u.owner && x.type==="army");
     if(foes.length){
@@ -929,14 +1030,20 @@ function aiTransport(f, u){
       u.moved = true; f.actions++;
       return;
     }
-    // sail to nearest enemy coast
-    const coast = nearestTile(u, t=>t.land && t.owner!=null && t.owner!==f.id && t.coastal);
-    if(coast){
-      const seaTarget = nearestTile(u, t=>!t.land && neighbors(t.q,t.r).some(([q,r])=>{
-        const n=tileAt(q,r); return n && n.land && n.owner!=null && n.owner!==f.id && n.coastal;
-      }));
-      stepToward(u, seaTarget || coast, "sea");
+    // sail to the nearest enemy coast actually reachable by sea
+    const candidates = [...G.tiles.values()]
+      .filter(t=>!t.land && neighbors(t.q,t.r).some(([q,r])=>{
+        const n = tileAt(q,r);
+        return n && n.land && n.owner!=null && n.owner!==f.id && n.coastal;
+      }))
+      .sort((a,b)=>hexDist(u,a)-hexDist(u,b))
+      .slice(0,6);
+    let picked = null;
+    for(const c of candidates){
+      if(fieldToward(c, "sea", f.id).has(key(u.q,u.r))){ picked = c; break; }
     }
+    if(!picked) picked = candidates[0] || null;
+    if(picked) stepToward(u, picked, "sea");
     u.moved = true;
     return;
   }
@@ -987,15 +1094,45 @@ function aiDestroyer(f, u){
 }
 
 function airStrike(att, target){
+  const before = target.type === "army" ? unitCount(target) : 1;
   const r = resolveBattle(att, target, {attMod:1.4, defMod:1});
-  if(r.won){
-    if(target.type === "army"){
-      if(unitCount(target) <= 0) removeUnit(target);
-    } else {
-      removeUnit(target);
-    }
+  let killed = 0;
+  if(target.type === "army"){
+    killed = Math.max(0, before - unitCount(target));
+    if(unitCount(target) <= 0) removeUnit(target);
+  } else if(r.won){
+    killed = 1;
+    removeUnit(target);
   }
-  return r;
+  return {killed, target, roll: r.won};
+}
+
+/* Fighters cast a real umbrella: anything hostile flying within three tiles
+   risks being engaged before it strikes. */
+function interceptorsNear(tile, ownerId){
+  return G.units.filter(x=>x.owner!==ownerId && x.type==="fighter" && hexDist(x,tile)<=3);
+}
+function tryInterception(aircraft, destTile){
+  const fs = interceptorsNear(destTile, aircraft.owner);
+  if(!fs.length) return null;
+  if(G.rng() > 0.45) return null;
+  const f = fs[0];
+  const r = resolveBattle(f, aircraft, {attMod:1.3, defMod:1});
+  if(r.won && G.units.includes(aircraft)){
+    removeUnit(aircraft);
+    return f;
+  }
+  return null;
+}
+
+function pickAirTarget(foes){
+  return foes.slice().sort((a,b)=>defPower(a)-defPower(b))[0] || null;
+}
+
+function targetLabel(u){
+  if(u.type === "army") return "army";
+  const n = UNITS[u.type].name.toLowerCase();
+  return n;
 }
 
 function aiAir(f, u){
@@ -1005,16 +1142,13 @@ function aiAir(f, u){
   if(u.type === "bomber" || u.type === "fighter"){
     const targets = G.units.filter(x=>x.owner!==f.id && hexDist(x,u) <= reach);
     if(targets.length){
-      const t = targets.sort((a,b)=>{
-        const av = a.type==="transport" ? 3 : a.type==="army" ? 1 : 2;
-        const bv = b.type==="transport" ? 3 : b.type==="army" ? 1 : 2;
-        return bv - av;
-      })[0];
-      if(hexDist(u,t) <= 1) { airStrike(u, t); u.moved = true; return; }
-      u.q = t.q; u.r = t.r;
-      airStrike(u, t);
-      u.moved = true; f.actions++;
-      return;
+      const t = pickAirTarget(targets);
+      if(t){
+        if(tryInterception(u, t)){ u.moved = true; f.actions++; return; }
+        airStrike(u, t);
+        u.moved = true; f.actions++;
+        return;
+      }
     }
     u.moved = true;
     return;
@@ -1022,12 +1156,12 @@ function aiAir(f, u){
 
   // air transport
   if(u.cargo.inf + u.cargo.arm > 0){
-    const drop = G.tiles.get(key(u.q,u.r));
     // drop onto adjacent enemy if possible
     const cands = neighbors(u.q,u.r).map(([q,r])=>tileAt(q,r))
       .filter(t=>t && t.land && t.owner!=null && t.owner!==f.id);
     if(cands.length && u.cargo.inf > 0){
       const target = cands[0];
+      if(tryInterception(u, target)){ u.moved = true; f.actions++; return; }
       const tmp = {type:"army", owner:f.id, q:u.q, r:u.r, inf:u.cargo.inf, arm:0};
       const res = landAssault(tmp, target, {attMod:0.6});
       if(res.won){
@@ -1042,9 +1176,10 @@ function aiAir(f, u){
     // fly toward enemy territory and drop
     const tgt = nearestTile(u, t=>t.land && t.owner!=null && t.owner!==f.id);
     if(tgt){
-      u.q = tgt.q; u.r = tgt.r;
       const nearest = neighbors(tgt.q,tgt.r).map(([q,r])=>tileAt(q,r)).find(t=>t && t.land && t.owner!=null && t.owner!==f.id);
       if(nearest && u.cargo.inf>0){
+        if(tryInterception(u, nearest)){ u.moved = true; f.actions++; return; }
+        u.q = tgt.q; u.r = tgt.r;
         const tmp = {type:"army", owner:f.id, q:u.q, r:u.r, inf:u.cargo.inf, arm:0};
         const res = landAssault(tmp, nearest, {attMod:0.6});
         if(res.won){ if(tmp.inf>0) spawnArmy(nearest, f.id, tmp.inf, 0); u.cargo.inf=0; }
@@ -1105,6 +1240,7 @@ function aiTurn(f){
   }
   const ms = performance.now() - t0;
   G.aiTimes.push(ms);
+  if(G.aiTimes.length > 400) G.aiTimes.splice(0, G.aiTimes.length - 400);
   return ms;
 }
 
@@ -1585,13 +1721,25 @@ function tryPlayerMove(u, t){
     if(t.land) return;
     u.q = t.q; u.r = t.r; u.moved = true;
   } else {
-    // air
+    // air: strike from range instead of parking on the enemy tile
     const foes = G.units.filter(x=>x.q===t.q && x.r===t.r && x.owner!==0);
-    u.q = t.q; u.r = t.r; u.moved = true;
     if(foes.length && (u.type==="bomber"||u.type==="fighter")){
-      const target = foes.find(x=>x.type==="army") || foes[0];
-      const r = airStrike(u, target);
-      addLog((r.won?"Air strike destroyed a target.":"Air strike failed."), r.won?"good":"war");
+      const target = pickAirTarget(foes);
+      const shot = tryInterception(u, t);
+      if(shot){
+        addLog("Interceptor engaged your " + UNITS[u.type].name.toLowerCase() + " — shot down.", "war");
+        u.moved = true;
+      } else {
+        const r = airStrike(u, target);
+        if(r.killed > 0){
+          addLog("Air strike: destroyed " + r.killed + " " + targetLabel(target) + ".", "good");
+        } else {
+          addLog("Air strike on " + targetLabel(target) + " had no effect.", "war");
+        }
+        u.moved = true;
+      }
+    } else {
+      u.q = t.q; u.r = t.r; u.moved = true;
     }
   }
   visCache = null;
@@ -1635,6 +1783,15 @@ function assaultFrom(u){
     .find(t=>t && t.land && t.owner!=null && t.owner!==0);
   if(!dst) return;
   const air = u.type === "airtransport";
+  if(air && tryInterception(u, dst)){
+    addLog("Air lift intercepted on approach — cargo lost.", "war");
+    u.cargo.inf = 0; u.cargo.arm = 0;
+    removeUnit(u);
+    if(G.selected === key(u.q,u.r)){ G.selected = null; G.moves = []; }
+    visCache = null;
+    renderSidebar(); updateHUD(); draw(); updateDiag();
+    return;
+  }
   const tmp = {type:"army", owner:0, q:u.q, r:u.r,
                inf:u.cargo.inf, arm: air?0:u.cargo.arm};
   const res = landAssault(tmp, dst, {attMod: air?0.6:0.75});
@@ -1697,6 +1854,16 @@ function research(k){
   updateHUD(); renderSidebar(); updateDiag();
 }
 
+function breakPact(enemyId){
+  const f = G.factions[0];
+  if(!f.pacts.has(enemyId)) return;
+  f.pacts.delete(enemyId);
+  const o = G.factions[enemyId];
+  if(o) o.pacts.delete(0);
+  addLog("You break the pact with " + (o?o.name:"them") + ".", "war");
+  updateHUD(); renderSidebar(); updateDiag(); saveGame();
+}
+
 function proposePact(enemyId){
   const f = G.factions[0];
   const e = G.factions[enemyId];
@@ -1752,10 +1919,10 @@ function renderSidebar(){
   setRow("iGarrison", us.length ? us.map(unitLabel).join(", ") : "Empty");
 
   const f = G.factions[0];
-  const myArmy = armyOn(tile,0);
   const myUnit = G.units.find(u=>u.q===t.q && u.r===t.r && u.owner===0);
 
   if(G.over){ hint.textContent = "The war is over."; return; }
+  hint.textContent = "";
 
   const mkBtn = (label, cost, cls, fn, disabled) => {
     const b = document.createElement("button");
@@ -1788,7 +1955,10 @@ function renderSidebar(){
     } else if(UNITS[myUnit.type].domain === "sea"){
       hint.textContent = "Click an adjacent sea tile to sail.";
     } else {
-      hint.textContent = "Click a tile within range to fly.";
+      if(myUnit.type === "bomber" || myUnit.type === "fighter")
+        hint.textContent = "Click a tile within range to fly or strike enemy units.";
+      else
+        hint.textContent = "Click a tile within range to fly.";
     }
   } else if(myUnit && myUnit.moved){
     hint.textContent = "This unit has already acted this turn.";
@@ -1833,6 +2003,8 @@ function renderSidebar(){
   } else if(tile.owner != null && !f.pacts.has(tile.owner)){
     mkBtn("Propose non-aggression pact", 120, "", ()=>proposePact(tile.owner),
       !canPay(f, 120));
+  } else if(tile.owner != null && tile.owner !== 0 && f.pacts.has(tile.owner)){
+    mkBtn("Break pact — declare war", null, "danger", ()=>breakPact(tile.owner));
   }
 }
 
@@ -1855,12 +2027,17 @@ function beginTurn(){
   G.turn++;
   visCache = null;
   AI.compCache.clear();
+  AI.field.clear();
   for(const f of G.factions){
     if(!f.alive) continue;
     f.gold += factionIncome(f);
     if(f.pacts.size){
       for(const pid of [...f.pacts]){
-        if(G.rng() < 0.12){ f.pacts.delete(pid); }
+        if(G.rng() < 0.12){
+          f.pacts.delete(pid);
+          const o = G.factions[pid];
+          if(o) o.pacts.delete(f.id);
+        }
       }
     }
   }
@@ -1918,11 +2095,13 @@ function checkVictory(){
 
 function gameOver(title, text){
   G.over = true;
-  const b = document.getElementById("banner");
+  G.overTitle = title;
+  G.overText = text;
   document.getElementById("bTitle").textContent = title;
   document.getElementById("bText").textContent = text;
-  b.classList.add("on");
+  document.getElementById("banner").classList.add("on");
   addLog(title.toUpperCase() + " — " + text, title==="Victory"?"good":"war");
+  saveGame();
 }
 
 /* ============================================================
@@ -1968,13 +2147,6 @@ function checkInvariants(){
   for(const f of G.factions){
     if(f.gold < -1) bad.push("negative treasury " + f.name);
   }
-  const seen = new Set();
-  for(const u of G.units){
-    if(u.type === "army"){
-      const k = key(u.q,u.r)+"|"+u.owner;
-      // multiple armies per faction per tile are allowed only via merge; flag duplicates
-    }
-  }
   return bad;
 }
 
@@ -1983,6 +2155,7 @@ function selfTest(turns){
   const t0 = performance.now();
   for(let i=0;i<turns;i++){
     AI.compCache.clear();
+    AI.field.clear();
     for(const f of G.factions){
       if(!f.alive || f.id === 0) continue;
       const ms = aiTurn(f);
@@ -2017,6 +2190,7 @@ function selfTest(turns){
 function beginTurnSilent(){
   G.turn++;
   AI.compCache.clear();
+  AI.field.clear();
   for(const f of G.factions){
     if(!f.alive) continue;
     f.gold += factionIncome(f);
@@ -2046,6 +2220,8 @@ function newGame(seed){
   G.selected = null;
   G.moves = [];
   G.over = false;
+  G.overTitle = null;
+  G.overText = null;
   G.logLines = [];
   G.aiTimes = [];
   AI.compCache.clear();
@@ -2112,6 +2288,11 @@ function init(){
     visCache = null;
     updateHUD();
     selectTile(G.factions[0].capital || [...G.tiles.values()].find(t=>t.land));
+    if(G.over){
+      document.getElementById("bTitle").textContent = G.overTitle || "War Ended";
+      document.getElementById("bText").textContent = G.overText || "This war is over.";
+      document.getElementById("banner").classList.add("on");
+    }
   }
   resize();
 
